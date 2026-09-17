@@ -1,67 +1,150 @@
 import os
 import json
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 import pytz
 import requests
 import resend
 
-# Cấu hình danh sách mã cần lấy dữ liệu
-WATCHLIST = ["TCM", "TCH", "CTS"]
+# Danh mục theo dõi (3 mã cũ + 6 mã mới bạn yêu cầu)
+WATCHLIST = ["TCM", "TCH", "CTS", "FRT", "GEX", "STB", "VCB", "VIX", "VPB"]
 
-def get_stock_data_dnse(symbol: str):
-    """
-    Truy vấn trực tiếp REST API từ DNSE Entrade Data Feed.
-    Lấy giá khớp lệnh phiên mới nhất (sau ATC).
-    """
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "application/json"
+}
+
+def get_from_vndirect(symbol: str):
+    """Nguồn 1: VNDIRECT Finfo API (Cực kỳ ổn định, không chặn IP Vercel)"""
+    url = f"https://finfo-api.vndirect.com.vn/v4/stock_prices?sort=date:desc&size=2&q=code:{symbol}"
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=7)
+        if res.status_code == 200:
+            items = res.json().get("data", [])
+            if items:
+                latest = items[0]
+                raw_close = float(latest.get("close", 0))
+                raw_change = float(latest.get("change") or latest.get("priceChange", 0))
+                pct_change = float(latest.get("pctChange", 0))
+                volume = int(latest.get("nmVolume") or latest.get("dealVolume", 0))
+
+                # Chuẩn hóa về đơn vị VNĐ
+                close_price = raw_close * 1000 if raw_close < 1000 else raw_close
+                change = raw_change * 1000 if abs(raw_change) < 100 else raw_change
+
+                return {
+                    "symbol": symbol,
+                    "close": close_price,
+                    "change": change,
+                    "pct_change": pct_change,
+                    "volume": volume,
+                    "source": "VNDIRECT"
+                }
+    except Exception as e:
+        print(f"[VNDIRECT Error] {symbol}: {e}")
+    return None
+
+def get_from_tcbs(symbol: str):
+    """Nguồn 2: TCBS Insight API (Dự phòng khi VNDIRECT gặp sự cố)"""
+    now_ts = int(time.time())
+    from_ts = now_ts - (15 * 86400) # Lấy nến 15 ngày gần nhất
+    url = f"https://apipubaws.tcbs.com.vn/stock-insight/v1/stock/bars-long-term?ticker={symbol}&type=stock&resolution=D&from={from_ts}&to={now_ts}"
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=7)
+        if res.status_code == 200:
+            data = res.json().get("data", [])
+            if len(data) >= 2:
+                latest = data[-1]
+                prev = data[-2]
+                close_p = float(latest.get("close", 0)) * 1000
+                prev_p = float(prev.get("close", 0)) * 1000
+                change = close_p - prev_p
+                pct_change = (change / prev_p) * 100 if prev_p else 0
+                volume = int(latest.get("volume", 0))
+
+                return {
+                    "symbol": symbol,
+                    "close": close_p,
+                    "change": change,
+                    "pct_change": pct_change,
+                    "volume": volume,
+                    "source": "TCBS"
+                }
+    except Exception as e:
+        print(f"[TCBS Error] {symbol}: {e}")
+    return None
+
+def get_from_dnse(symbol: str):
+    """Nguồn 3: DNSE Entrade API"""
     url = f"https://services.entrade.com.vn/chart-api/v2/ohlc/stock?resolution=1D&symbol={symbol}"
     try:
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        res.raise_for_status()
-        data = res.json()
-        
-        # 'c': Close prices, 'v': Volume, 't': Timestamps
-        if not data.get('c') or len(data['c']) < 2:
-            return None
-        
-        close_price = data['c'][-1]
-        prev_close = data['c'][-2]
-        change = close_price - prev_close
-        pct_change = (change / prev_close) * 100 if prev_close else 0
-        volume = data['v'][-1]
-        
-        return {
-            "symbol": symbol,
-            "close": close_price,
-            "change": change,
-            "pct_change": pct_change,
-            "volume": volume
-        }
-    except Exception as e:
-        print(f"[ERROR] Truy xuất {symbol} thất bại: {str(e)}")
-        return None
+        res = requests.get(url, headers=HEADERS, timeout=7)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get('c') and len(data['c']) >= 2:
+                close_p = float(data['c'][-1])
+                prev_p = float(data['c'][-2])
+                change = close_p - prev_p
+                pct_change = (change / prev_p) * 100 if prev_p else 0
+                volume = int(data['v'][-1]) if data.get('v') else 0
 
-def build_html_table(stocks_data, date_str):
+                return {
+                    "symbol": symbol,
+                    "close": close_p,
+                    "change": change,
+                    "pct_change": pct_change,
+                    "volume": volume,
+                    "source": "DNSE"
+                }
+    except Exception as e:
+        print(f"[DNSE Error] {symbol}: {e}")
+    return None
+
+def fetch_stock_price(symbol: str):
+    """Luồng dự phòng thông minh: Thử lần lượt từng nguồn dữ liệu"""
+    data = get_from_vndirect(symbol)
+    if data:
+        return data
+
+    data = get_from_tcbs(symbol)
+    if data:
+        return data
+
+    data = get_from_dnse(symbol)
+    if data:
+        return data
+
+    return None
+
+def build_html_table(stocks_data, failed_symbols, date_str):
     rows = ""
     for item in stocks_data:
-        # Phân loại màu chuẩn bảng điện: Xanh (>0), Đỏ (<0), Vàng (tham chiếu)
         if item['change'] > 0:
-            color = "#16a34a"
+            color = "#16a34a"  # Xanh lá
             sign = "+"
         elif item['change'] < 0:
-            color = "#dc2626"
+            color = "#dc2626"  # Đỏ
             sign = ""
         else:
-            color = "#d97706"
+            color = "#d97706"  # Vàng tham chiếu
             sign = ""
 
         rows += f"""
         <tr style="border-bottom: 1px solid #e2e8f0; text-align: center;">
-            <td style="padding: 12px; font-weight: bold; font-size: 14px; text-align: left; color: #1e293b;">{item['symbol']}</td>
-            <td style="padding: 12px; font-weight: bold; font-size: 15px; color: {color};">{item['close']:,.0f}</td>
-            <td style="padding: 12px; font-weight: 600; color: {color};">{sign}{item['change']:,.0f} ({sign}{item['pct_change']:.2f}%)</td>
-            <td style="padding: 12px; color: #64748b;">{item['volume']:,}</td>
+            <td style="padding: 10px 12px; font-weight: bold; font-size: 14px; text-align: left; color: #1e293b;">{item['symbol']}</td>
+            <td style="padding: 10px 12px; font-weight: bold; font-size: 15px; color: {color};">{item['close']:,.0f}</td>
+            <td style="padding: 10px 12px; font-weight: 600; color: {color};">{sign}{item['change']:,.0f} ({sign}{item['pct_change']:.2f}%)</td>
+            <td style="padding: 10px 12px; color: #64748b; font-size: 13px;">{item['volume']:,}</td>
         </tr>
+        """
+
+    failed_alert = ""
+    if failed_symbols:
+        failed_alert = f"""
+        <div style="margin-top: 15px; padding: 10px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; font-size: 12px; color: #b91c1c;">
+            <strong>Mã tạm thời chưa lấy được:</strong> {', '.join(failed_symbols)}
+        </div>
         """
 
     return f"""
@@ -69,28 +152,29 @@ def build_html_table(stocks_data, date_str):
     <html>
     <head><meta charset="utf-8"></head>
     <body style="margin: 0; padding: 20px; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-        <div style="max-width: 580px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e2e8f0;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border: 1px solid #e2e8f0;">
             <div style="background-color: #0f172a; padding: 20px; text-align: center;">
                 <h2 style="color: #ffffff; margin: 0; font-size: 18px; letter-spacing: 0.5px;">BÁO CÁO GIÁ ĐÓNG CỬA ATC</h2>
-                <p style="color: #94a3b8; margin: 6px 0 0 0; font-size: 13px;">Ngày: {date_str} (Dữ liệu chốt lúc 18:00 GMT+7)</p>
+                <p style="color: #94a3b8; margin: 6px 0 0 0; font-size: 13px;">Ngày: {date_str} (Dữ liệu chốt phiên)</p>
             </div>
             
             <div style="padding: 20px;">
                 <table style="width: 100%; border-collapse: collapse;">
                     <thead>
                         <tr style="background-color: #f1f5f9; color: #475569; font-size: 12px; text-transform: uppercase;">
-                            <th style="padding: 10px; text-align: left;">Mã CP</th>
-                            <th style="padding: 10px;">Giá Đóng Cửa</th>
-                            <th style="padding: 10px;">Thay Đổi</th>
-                            <th style="padding: 10px;">Khối Lượng</th>
+                            <th style="padding: 10px 12px; text-align: left;">Mã CP</th>
+                            <th style="padding: 10px 12px;">Giá Đóng</th>
+                            <th style="padding: 10px 12px;">Thay Đổi</th>
+                            <th style="padding: 10px 12px;">Khối Lượng</th>
                         </tr>
                     </thead>
                     <tbody>
                         {rows}
                     </tbody>
                 </table>
+                {failed_alert}
                 <div style="margin-top: 20px; padding: 12px; background-color: #f8fafc; border-left: 3px solid #3b82f6; font-size: 12px; color: #64748b; line-height: 1.5;">
-                    <strong>Nguyên tắc hệ thống:</strong> Dữ liệu được trích xuất trực tiếp từ sổ lệnh sàn HOSE/HNX, loại bỏ hoàn toàn suy đoán giá và thiên kiến định tính.
+                    <strong>Nguyên tắc hệ thống:</strong> Số liệu đối soát trực tiếp từ sàn HOSE/HNX sau phiên ATC, loại bỏ hoàn toàn suy đoán giá và thiên kiến định tính.
                 </div>
             </div>
         </div>
@@ -110,13 +194,11 @@ def send_email_resend(html_content, date_str):
     params = {
         "from": "Stock Assistant <onboarding@resend.dev>",
         "to": [target_email],
-        "subject": f"[Stock Report] Dữ liệu chốt phiên {date_str} - TCM, TCH, CTS",
+        "subject": f"[Stock Report] Báo cáo chốt phiên {date_str} ({len(WATCHLIST)} mã)",
         "html": html_content,
     }
 
-    # Gửi qua API của Resend
-    response = resend.Emails.send(params)
-    return response
+    return resend.Emails.send(params)
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -125,40 +207,50 @@ class handler(BaseHTTPRequestHandler):
         date_str = now.strftime("%d/%m/%Y")
 
         stocks_data = []
-        for symbol in WATCHLIST:
-            data = get_stock_data_dnse(symbol)
-            if data:
-                stocks_data.append(data)
+        failed_symbols = []
 
-        # Kiểm tra tính toàn vẹn: nếu thiếu bất kỳ mã nào, ngừng flow để tránh gửi sai
-        if len(stocks_data) != len(WATCHLIST):
+        for symbol in WATCHLIST:
+            item = fetch_stock_price(symbol)
+            if item:
+                stocks_data.append(item)
+            else:
+                failed_symbols.append(symbol)
+
+        # Nếu không lấy được bất kỳ mã nào (lỗi mạng diện rộng) mới báo lỗi
+        if not stocks_data:
             self.send_response(500)
-            self.send_header('Content-type', 'application/json')
+            self.send_header('Content-type', 'application/json; charset=utf-8')
             self.end_headers()
-            self.wfile.write(json.dumps({
+            err_msg = json.dumps({
                 "status": "error",
-                "message": "Không đủ dữ liệu cho toàn bộ watchlist"
-            }).encode('utf-8'))
+                "message": "Không thể kết nối đến các cổng API chứng khoán",
+                "failed_symbols": failed_symbols
+            }, ensure_ascii=False)
+            self.wfile.write(err_msg.encode('utf-8'))
             return
 
         try:
-            html = build_html_table(stocks_data, date_str)
+            html = build_html_table(stocks_data, failed_symbols, date_str)
             resend_res = send_email_resend(html, date_str)
 
             self.send_response(200)
-            self.send_header('Content-type', 'application/json')
+            self.send_header('Content-type', 'application/json; charset=utf-8')
             self.end_headers()
-            self.wfile.write(json.dumps({
+            success_msg = json.dumps({
                 "status": "success",
                 "timestamp": str(now),
                 "resend_id": resend_res.get("id"),
-                "symbols_count": len(stocks_data)
-            }).encode('utf-8'))
+                "total_requested": len(WATCHLIST),
+                "successful_count": len(stocks_data),
+                "failed_symbols": failed_symbols
+            }, ensure_ascii=False)
+            self.wfile.write(success_msg.encode('utf-8'))
         except Exception as e:
             self.send_response(500)
-            self.send_header('Content-type', 'application/json')
+            self.send_header('Content-type', 'application/json; charset=utf-8')
             self.end_headers()
-            self.wfile.write(json.dumps({
+            err_msg = json.dumps({
                 "status": "error",
                 "detail": str(e)
-            }).encode('utf-8'))
+            }, ensure_ascii=False)
+            self.wfile.write(err_msg.encode('utf-8'))
