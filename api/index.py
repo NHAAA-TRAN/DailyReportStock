@@ -172,9 +172,9 @@ def calculate_technical_metrics(stock):
         "scenario": scenario
     }
 
-# ==================== 3. MOBILE-RESPONSIVE CANVAS BUILDER ====================
+# ==================== 3. MOBILE CANVAS BUILDER ====================
 
-def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
+def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str, execution_id):
     vn_close = vnindex["close"] if vnindex else 1275.50
     vn_change = vnindex["change"] if vnindex else 4.25
     vn_pct = vnindex["pct_change"] if vnindex else 0.33
@@ -182,7 +182,6 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
     vn_color = "#15803d" if vn_change >= 0 else "#b91c1c"
     vn_sign = "+" if vn_change >= 0 else ""
 
-    # Bảng tổng hợp 9 mã dạng 3 cột tối ưu hiển thị di động
     quick_rows = ""
     for item in stocks_analyzed:
         s = item["raw"]
@@ -209,7 +208,6 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
         </tr>
         """
 
-    # Bảng chi tiết 10 chỉ số cho từng mã
     detailed_stock_tables = ""
     for idx, item in enumerate(stocks_analyzed, 1):
         s = item["raw"]
@@ -267,7 +265,6 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
         </div>
         """
 
-    # Bảng Lịch sự kiện
     event_rows = ""
     for ev in events:
         event_rows += f"""
@@ -285,27 +282,22 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <meta http-equiv="X-UA-Compatible" content="IE=edge">
-        <title>Báo Cáo Phân Tích Chứng Khoán</title>
-        <style>
-            body, table, td, p, a, li {{ -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }}
-            table, td {{ mso-table-lspace: 0pt; mso-table-rspace: 0pt; border-collapse: collapse; }}
-            img {{ -ms-interpolation-mode: bicubic; }}
-        </style>
+        <title>Báo Cáo Chứng Khoán {date_str}</title>
     </head>
     <body style="margin: 0; padding: 10px 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-        <div style="width: 96%; max-width: 660px; margin: 0 auto; background-color: #ffffff; border-radius: 10px; overflow: hidden; border: 2px solid #cbd5e1; box-sizing: border-box;">
+        <!-- Anti-trimming unique container -->
+        <div id="report-{execution_id}" style="width: 96%; max-width: 660px; margin: 0 auto; background-color: #ffffff; border-radius: 10px; overflow: hidden; border: 2px solid #cbd5e1; box-sizing: border-box;">
             
             <!-- HEADER -->
             <div style="background-color: #0f172a; padding: 20px 14px; text-align: center;">
                 <span style="background-color: #2563eb; color: #ffffff; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: bold; letter-spacing: 1px; display: inline-block;">CANVAS DASHBOARD</span>
                 <h1 style="color: #ffffff; margin: 10px 0 4px 0; font-size: 20px; line-height: 1.3;">BÁO CÁO PHÂN TÍCH THỊ TRƯỜNG & DANH MỤC</h1>
-                <p style="color: #94a3b8; margin: 0; font-size: 14px;">Phiên giao dịch {date_str} (Gửi lúc 19:00 GMT+7)</p>
+                <p style="color: #94a3b8; margin: 0; font-size: 14px;">Phiên giao dịch {date_str} (Mã phiên: #{execution_id})</p>
             </div>
 
             <div style="padding: 14px;">
 
-                <!-- PHẦN 1: TỔNG QUAN THỊ TRƯỜNG DẠNG LƯỚI CARD KHÔNG TRÀN MÀN HÌNH -->
+                <!-- PHẦN 1: TỔNG QUAN -->
                 <div style="margin-bottom: 24px;">
                     <h2 style="color: #0f172a; margin: 0 0 10px 0; font-size: 17px; border-left: 4px solid #2563eb; padding-left: 8px;">
                         1. Tổng Quan Thị Trường VN-Index
@@ -472,7 +464,6 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
                         6. Báo Cáo Phân Tích Chuyên Sâu 9 Mã Cổ Phiếu
                     </h2>
                     
-                    <!-- 6.1: Bảng tổng hợp 3 cột tối ưu di động -->
                     <h3 style="color: #1e293b; font-size: 15px; margin: 12px 0 8px 0;">6.1. Bảng Tổng Hợp Vị Thế & Ngưỡng SL / TP</h3>
                     <table style="width: 100%; border: 2px solid #1e293b; margin-bottom: 20px;">
                         <thead>
@@ -487,7 +478,6 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
                         </tbody>
                     </table>
 
-                    <!-- 6.2: Danh sách thẻ phân tích 10 chỉ số cho từng mã -->
                     <h3 style="color: #1e293b; font-size: 15px; margin: 0 0 10px 0;">6.2. Phân Tích Kỹ Thuật Chi Tiết Từng Mã</h3>
                     {detailed_stock_tables}
                 </div>
@@ -505,7 +495,7 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
     </html>
     """
 
-def send_canvas_email(html_content, date_str):
+def send_canvas_email(html_content, date_str, time_str, execution_id):
     api_key = os.environ.get("RESEND_API_KEY")
     target_email = os.environ.get("TARGET_EMAIL")
 
@@ -513,11 +503,18 @@ def send_canvas_email(html_content, date_str):
         raise ValueError("Thiếu biến môi trường RESEND_API_KEY hoặc TARGET_EMAIL")
 
     resend.api_key = api_key
+    
+    # Tiêu đề độc bản mang theo mốc giờ:phút:giây để ngăn Gmail gom luồng
+    subject_line = f"[Canvas Report] Báo cáo VN-Index & Danh mục 9 mã ({date_str} lúc {time_str})"
+
     params = {
         "from": "Canvas Intelligence <onboarding@resend.dev>",
         "to": [target_email],
-        "subject": f"[Canvas Report] Báo cáo Thị trường VN-Index & Phân tích 9 mã ({date_str})",
+        "subject": subject_line,
         "html": html_content,
+        "headers": {
+            "X-Entity-Ref-ID": execution_id
+        }
     }
     return resend.Emails.send(params)
 
@@ -528,6 +525,8 @@ class handler(BaseHTTPRequestHandler):
         tz = pytz.timezone("Asia/Ho_Chi_Minh")
         now = datetime.now(tz)
         date_str = now.strftime("%d/%m/%Y")
+        time_str = now.strftime("%H:%M:%S")
+        execution_id = f"{int(now.timestamp())}"
 
         parsed_url = urlparse(self.path)
         query_params = parse_qs(parsed_url.query)
@@ -596,8 +595,8 @@ class handler(BaseHTTPRequestHandler):
             return
 
         try:
-            canvas_html = build_canvas_dashboard(vnindex_data, stocks_analyzed, events_data, date_str)
-            resend_res = send_canvas_email(canvas_html, date_str)
+            canvas_html = build_canvas_dashboard(vnindex_data, stocks_analyzed, events_data, date_str, execution_id)
+            resend_res = send_canvas_email(canvas_html, date_str, time_str, execution_id)
 
             self.send_response(200)
             self.send_header('Content-type', 'application/json; charset=utf-8')
