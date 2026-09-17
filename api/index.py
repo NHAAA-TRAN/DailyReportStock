@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 import pytz
 import requests
 import resend
@@ -56,6 +57,8 @@ def get_from_ssi(symbol: str):
                         "change": change,
                         "pct_change": pct_change,
                         "volume": volume,
+                        "high": float(data.get("highest", 0) or close_p * 1.02),
+                        "low": float(data.get("lowest", 0) or close_p * 0.98),
                         "source": "SSI"
                     }
     except Exception:
@@ -180,7 +183,6 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
     vn_color = "#15803d" if vn_change >= 0 else "#b91c1c"
     vn_sign = "+" if vn_change >= 0 else ""
 
-    # Bảng tổng hợp nhanh 9 mã
     quick_rows = ""
     for item in stocks_analyzed:
         s = item["raw"]
@@ -201,7 +203,6 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
         </tr>
         """
 
-    # Bảng chi tiết từng mã (Thay thế hoàn toàn bullet list)
     detailed_stock_tables = ""
     for idx, item in enumerate(stocks_analyzed, 1):
         s = item["raw"]
@@ -263,7 +264,6 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
         </div>
         """
 
-    # Bảng Lịch sự kiện
     event_rows = ""
     for ev in events:
         event_rows += f"""
@@ -282,16 +282,15 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
     <body style="margin: 0; padding: 24px; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
         <div style="max-width: 760px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.15); border: 2px solid #cbd5e1;">
             
-            <!-- HEADER -->
             <div style="background-color: #0f172a; padding: 28px 24px; text-align: center;">
                 <span style="background-color: #2563eb; color: #ffffff; padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: bold; letter-spacing: 1px;">CANVAS DASHBOARD</span>
                 <h1 style="color: #ffffff; margin: 14px 0 6px 0; font-size: 24px; letter-spacing: 0.5px;">BÁO CÁO PHÂN TÍCH THỊ TRƯỜNG & DANH MỤC</h1>
-                <p style="color: #94a3b8; margin: 0; font-size: 16px;">Phiên giao dịch ngày {date_str} (Chốt lúc 16:00 GMT+7)</p>
+                <p style="color: #94a3b8; margin: 0; font-size: 16px;">Phiên giao dịch ngày {date_str} (Báo cáo gửi lúc 19:00 GMT+7)</p>
             </div>
 
             <div style="padding: 26px;">
 
-                <!-- PHẦN 1: TỔNG QUAN THỊ TRƯỜNG -->
+                <!-- PHẦN 1 -->
                 <div style="margin-bottom: 32px;">
                     <h2 style="color: #0f172a; margin: 0 0 14px 0; font-size: 19px; border-left: 5px solid #2563eb; padding-left: 12px;">
                         1. Tổng Quan Thị Trường VN-Index (Chốt Phiên {date_str})
@@ -319,7 +318,7 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
                     </div>
                 </div>
 
-                <!-- PHẦN 2: 3 ĐIỂM TỰA VĨ MÔ -->
+                <!-- PHẦN 2 -->
                 <div style="margin-bottom: 32px;">
                     <h2 style="color: #0f172a; margin: 0 0 14px 0; font-size: 19px; border-left: 5px solid #2563eb; padding-left: 12px;">
                         2. Nghiên Cứu Chuyên Sâu: 3 Điểm Tựa Vĩ Mô & Ý Nghĩa Dài Hạn
@@ -344,7 +343,7 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
                     </table>
                 </div>
 
-                <!-- PHẦN 3: VỊ THẾ NHÓM NGÀNH -->
+                <!-- PHẦN 3 -->
                 <div style="margin-bottom: 32px;">
                     <h2 style="color: #0f172a; margin: 0 0 14px 0; font-size: 19px; border-left: 5px solid #2563eb; padding-left: 12px;">
                         3. Vị Thế & Khuyến Nghị Nhóm Ngành
@@ -358,7 +357,7 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
                         </tr>
                         <tr>
                             <td style="padding: 12px 14px; border: 1.5px solid #cbd5e1; font-weight: bold;">Dầu khí & Năng lượng</td>
-                            <td style="padding: 12px; border: 1.5px solid #cbd5e1; text-align: center;">Dòng tiền đi ngang</td>
+                            <td style="padding: 12px border: 1.5px solid #cbd5e1; text-align: center;">Dòng tiền đi ngang</td>
                             <td style="padding: 12px; border: 1.5px solid #cbd5e1; text-align: center;">Tích lũy đáy MA50</td>
                             <td style="padding: 12px; border: 1.5px solid #cbd5e1; color: #0284c7; font-weight: bold; text-align: center;">Quan sát, tích lũy dần</td>
                         </tr>
@@ -389,7 +388,7 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
                     </table>
                 </div>
 
-                <!-- PHẦN 4: TOP CỔ PHIẾU CẦN LƯU Ý -->
+                <!-- PHẦN 4 -->
                 <div style="margin-bottom: 32px;">
                     <h2 style="color: #0f172a; margin: 0 0 14px 0; font-size: 19px; border-left: 5px solid #2563eb; padding-left: 12px;">
                         4. Top Cổ Phiếu Có Vị Thế Cần Lưu Ý
@@ -418,7 +417,7 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
                     </table>
                 </div>
 
-                <!-- PHẦN 5: LỊCH SỰ KIỆN TRONG TUẦN -->
+                <!-- PHẦN 5 -->
                 <div style="margin-bottom: 32px;">
                     <h2 style="color: #0f172a; margin: 0 0 14px 0; font-size: 19px; border-left: 5px solid #2563eb; padding-left: 12px;">
                         5. Lịch Sự Kiện Doanh Nghiệp Cụ Thể Trong Tuần
@@ -438,14 +437,13 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
                     </table>
                 </div>
 
-                <!-- PHẦN 6: BÁO CÁO PHÂN TÍCH CHUYÊN SÂU 9 MÃ -->
+                <!-- PHẦN 6 -->
                 <div style="margin-bottom: 24px;">
                     <h2 style="color: #0f172a; margin: 0 0 8px 0; font-size: 20px; border-left: 5px solid #2563eb; padding-left: 12px;">
                         6. Báo Cáo Phân Tích Chuyên Sâu 9 Mã Cổ Phiếu
                     </h2>
                     <p style="font-size: 15px; color: #475569; margin: 0 0 16px 0;">(Danh mục theo dõi: STB, FRT, GEX, TCH, TCM, VPB, CTS, VCB, VIX - Trình bày trực quan dạng Bảng):</p>
                     
-                    <!-- Bảng 6.1: Tổng hợp nhanh 9 mã -->
                     <h3 style="color: #1e293b; font-size: 17px; margin: 0 0 10px 0;">6.1. Bảng Tổng Hợp Vị Thế & Điểm Cắt Lỗ / Chốt Lời</h3>
                     <table style="width: 100%; border-collapse: collapse; border: 2px solid #1e293b; margin-bottom: 28px;">
                         <thead>
@@ -463,7 +461,6 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
                         </tbody>
                     </table>
 
-                    <!-- Bảng 6.2: Chi tiết 10 tiêu chí cho từng mã -->
                     <h3 style="color: #1e293b; font-size: 17px; margin: 0 0 14px 0;">6.2. Bảng Phân Tích Kỹ Thuật Chi Tiết Từng Mã Cổ Phiếu</h3>
                     {detailed_stock_tables}
                 </div>
@@ -471,7 +468,7 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str):
                 <!-- FOOTER KHUYẾN KHÍCH CHO MẸ -->
                 <div style="margin-top: 36px; padding: 22px; background: linear-gradient(135deg, #fef2f2 0%, #fffbeb 100%); border: 2px solid #fecaca; border-radius: 12px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
                     <p style="margin: 0; font-size: 20px; font-weight: bold; color: #b91c1c; letter-spacing: 0.5px;">
-                        🌸 Chúc Mẹ giao dịch thành công! 📈💰🍀❤️
+                        🌸 Chúc Mẹ giao dịch an toàn, thuận lợi và gặt hái thật nhiều thành công! 📈💰🍀❤️
                     </p>
                 </div>
 
@@ -497,7 +494,7 @@ def send_canvas_email(html_content, date_str):
     }
     return resend.Emails.send(params)
 
-# ==================== 4. HTTP REQUEST HANDLER ====================
+# ==================== 4. HTTP REQUEST HANDLER WITH SECURITY GUARDS ====================
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -505,6 +502,61 @@ class handler(BaseHTTPRequestHandler):
         now = datetime.now(tz)
         date_str = now.strftime("%d/%m/%Y")
 
+        # Parse query params
+        parsed_url = urlparse(self.path)
+        query_params = parse_qs(parsed_url.query)
+        is_force = query_params.get("force", ["false"])[0].lower() == "true"
+        url_secret = query_params.get("secret", [""])[0]
+
+        # ----------------------------------------------------
+        # BẢO VỆ 1: Kiểm tra CRON_SECRET từ Header hoặc URL
+        # ----------------------------------------------------
+        cron_secret_env = os.environ.get("CRON_SECRET", "")
+        auth_header = self.headers.get("Authorization", "")
+        
+        # Cho phép nếu:
+        # 1. Vercel Cron gửi kèm Header: Authorization: Bearer <CRON_SECRET>
+        # 2. Hoặc bạn test thủ công qua URL: ?secret=<CRON_SECRET>&force=true
+        is_authorized = False
+        if not cron_secret_env:
+            # Nếu chưa cấu hình CRON_SECRET trên Vercel thì tạm thời cho qua (nhưng khuyến nghị cài đặt)
+            is_authorized = True
+        elif auth_header == f"Bearer {cron_secret_env}" or url_secret == cron_secret_env:
+            is_authorized = True
+
+        if not is_authorized:
+            self.send_response(401)
+            self.send_header('Content-type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "status": "unauthorized",
+                "message": "Truy cập bị từ chối. Chỉ Vercel Cron mới có quyền kích hoạt endpoint này."
+            }, ensure_ascii=False).encode('utf-8'))
+            return
+
+        # ----------------------------------------------------
+        # BẢO VỆ 2: Khóa Khung Giờ (Chỉ cho phép chạy lúc ~19:00 GMT+7)
+        # ----------------------------------------------------
+        # Khung giờ hợp lệ: Từ 18:50 đến 19:30 GMT+7 (Trừ khi bạn dùng ?force=true để test)
+        current_hour = now.hour
+        current_minute = now.minute
+
+        is_correct_time_window = (current_hour == 18 and current_minute >= 50) or (current_hour == 19 and current_minute <= 30)
+
+        if not is_correct_time_window and not is_force:
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "status": "ignored",
+                "message": f"Bỏ qua gửi mail vì hiện tại là {now.strftime('%H:%M:%S')} (ngoài khung giờ 19:00 GMT+7).",
+                "current_time": str(now)
+            }, ensure_ascii=False).encode('utf-8'))
+            return
+
+        # ----------------------------------------------------
+        # XỬ LÝ GỬI EMAIL CHÍNH THỨC
+        # ----------------------------------------------------
         symbols_to_fetch = ["VNINDEX"] + [item["symbol"] for item in FOCUS_STOCKS]
         fetched_data = {}
 
@@ -557,7 +609,6 @@ class handler(BaseHTTPRequestHandler):
                 "status": "success",
                 "timestamp": str(now),
                 "resend_id": resend_res.get("id"),
-                "vnindex_tracked": vnindex_data is not None,
                 "stocks_analyzed_count": len(stocks_analyzed),
                 "corporate_events_count": len(events_data)
             }, ensure_ascii=False).encode('utf-8'))
