@@ -485,7 +485,7 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str, execution
                 <!-- FOOTER CHÚC MẸ -->
                 <div style="margin-top: 24px; padding: 18px 12px; background: linear-gradient(135deg, #fef2f2 0%, #fffbeb 100%); border: 2px solid #fecaca; border-radius: 10px; text-align: center;">
                     <p style="margin: 0; font-size: 17px; font-weight: bold; color: #b91c1c; line-height: 1.4;">
-                        🌸 Chúc Mẹ giao dịch an toàn, thuận lợi và gặt hái thật nhiều thành công! 📈💰🍀❤️
+                        🌸 Chúc Mẹ giao dịch thật nhiều thành công! 📈💰🍀❤️
                     </p>
                 </div>
 
