@@ -7,51 +7,21 @@ import pytz
 import requests
 import resend
 
-# Danh mục theo dõi (3 mã cũ + 6 mã mới bạn yêu cầu)
 WATCHLIST = ["TCM", "TCH", "CTS", "FRT", "GEX", "STB", "VCB", "VIX", "VPB"]
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "application/json"
-}
-
-def get_from_vndirect(symbol: str):
-    """Nguồn 1: VNDIRECT Finfo API (Cực kỳ ổn định, không chặn IP Vercel)"""
-    url = f"https://finfo-api.vndirect.com.vn/v4/stock_prices?sort=date:desc&size=2&q=code:{symbol}"
-    try:
-        res = requests.get(url, headers=HEADERS, timeout=7)
-        if res.status_code == 200:
-            items = res.json().get("data", [])
-            if items:
-                latest = items[0]
-                raw_close = float(latest.get("close", 0))
-                raw_change = float(latest.get("change") or latest.get("priceChange", 0))
-                pct_change = float(latest.get("pctChange", 0))
-                volume = int(latest.get("nmVolume") or latest.get("dealVolume", 0))
-
-                # Chuẩn hóa về đơn vị VNĐ
-                close_price = raw_close * 1000 if raw_close < 1000 else raw_close
-                change = raw_change * 1000 if abs(raw_change) < 100 else raw_change
-
-                return {
-                    "symbol": symbol,
-                    "close": close_price,
-                    "change": change,
-                    "pct_change": pct_change,
-                    "volume": volume,
-                    "source": "VNDIRECT"
-                }
-    except Exception as e:
-        print(f"[VNDIRECT Error] {symbol}: {e}")
-    return None
-
 def get_from_tcbs(symbol: str):
-    """Nguồn 2: TCBS Insight API (Dự phòng khi VNDIRECT gặp sự cố)"""
+    """Nguồn 1: TCBS Insight API (Kèm Referer chống 403 Forbidden)"""
     now_ts = int(time.time())
-    from_ts = now_ts - (15 * 86400) # Lấy nến 15 ngày gần nhất
+    from_ts = now_ts - (15 * 86400)
     url = f"https://apipubaws.tcbs.com.vn/stock-insight/v1/stock/bars-long-term?ticker={symbol}&type=stock&resolution=D&from={from_ts}&to={now_ts}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://tcinvest.tcbs.com.vn",
+        "Referer": "https://tcinvest.tcbs.com.vn/"
+    }
     try:
-        res = requests.get(url, headers=HEADERS, timeout=7)
+        res = requests.get(url, headers=headers, timeout=4)
         if res.status_code == 200:
             data = res.json().get("data", [])
             if len(data) >= 2:
@@ -71,23 +41,32 @@ def get_from_tcbs(symbol: str):
                     "volume": volume,
                     "source": "TCBS"
                 }
-    except Exception as e:
-        print(f"[TCBS Error] {symbol}: {e}")
+    except Exception:
+        pass
     return None
 
-def get_from_dnse(symbol: str):
-    """Nguồn 3: DNSE Entrade API"""
-    url = f"https://services.entrade.com.vn/chart-api/v2/ohlc/stock?resolution=1D&symbol={symbol}"
+def get_from_vndirect(symbol: str):
+    """Nguồn 2: VNDIRECT Finfo API (Kèm Referer)"""
+    url = f"https://finfo-api.vndirect.com.vn/v4/stock_prices?sort=date:desc&size=2&q=code:{symbol}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Origin": "https://dchart.vndirect.com.vn",
+        "Referer": "https://dchart.vndirect.com.vn/"
+    }
     try:
-        res = requests.get(url, headers=HEADERS, timeout=7)
+        res = requests.get(url, headers=headers, timeout=4)
         if res.status_code == 200:
-            data = res.json()
-            if data.get('c') and len(data['c']) >= 2:
-                close_p = float(data['c'][-1])
-                prev_p = float(data['c'][-2])
-                change = close_p - prev_p
-                pct_change = (change / prev_p) * 100 if prev_p else 0
-                volume = int(data['v'][-1]) if data.get('v') else 0
+            items = res.json().get("data", [])
+            if items:
+                latest = items[0]
+                raw_close = float(latest.get("close", 0))
+                raw_change = float(latest.get("change") or latest.get("priceChange", 0))
+                pct_change = float(latest.get("pctChange", 0))
+                volume = int(latest.get("nmVolume") or latest.get("dealVolume", 0))
+
+                close_p = raw_close * 1000 if raw_close < 1000 else raw_close
+                change = raw_change * 1000 if abs(raw_change) < 100 else raw_change
 
                 return {
                     "symbol": symbol,
@@ -95,23 +74,58 @@ def get_from_dnse(symbol: str):
                     "change": change,
                     "pct_change": pct_change,
                     "volume": volume,
-                    "source": "DNSE"
+                    "source": "VNDIRECT"
                 }
-    except Exception as e:
-        print(f"[DNSE Error] {symbol}: {e}")
+    except Exception:
+        pass
+    return None
+
+def get_from_yahoo(symbol: str):
+    """Nguồn 3: Yahoo Finance API quốc tế (Miễn nhiễm 100% với việc chặn IP Datacenter)"""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.VN?interval=1d&range=5d"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "application/json"
+    }
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            chart_data = res.json().get("chart", {}).get("result", [])
+            if chart_data:
+                meta = chart_data[0].get("meta", {})
+                close_p = float(meta.get("regularMarketPrice") or 0)
+                prev_p = float(meta.get("chartPreviousClose") or meta.get("previousClose") or 0)
+
+                indicators = chart_data[0].get("indicators", {}).get("quote", [{}])[0]
+                volumes = indicators.get("volume", [])
+                volume = int(volumes[-1]) if volumes and volumes[-1] is not None else 0
+
+                if close_p > 0 and prev_p > 0:
+                    change = close_p - prev_p
+                    pct_change = (change / prev_p) * 100
+                    return {
+                        "symbol": symbol,
+                        "close": close_p,
+                        "change": change,
+                        "pct_change": pct_change,
+                        "volume": volume,
+                        "source": "YahooFinance"
+                    }
+    except Exception:
+        pass
     return None
 
 def fetch_stock_price(symbol: str):
-    """Luồng dự phòng thông minh: Thử lần lượt từng nguồn dữ liệu"""
-    data = get_from_vndirect(symbol)
-    if data:
-        return data
-
+    """Cơ chế Fallback: TCBS -> VNDIRECT -> Yahoo Finance"""
     data = get_from_tcbs(symbol)
     if data:
         return data
 
-    data = get_from_dnse(symbol)
+    data = get_from_vndirect(symbol)
+    if data:
+        return data
+
+    data = get_from_yahoo(symbol)
     if data:
         return data
 
@@ -174,7 +188,7 @@ def build_html_table(stocks_data, failed_symbols, date_str):
                 </table>
                 {failed_alert}
                 <div style="margin-top: 20px; padding: 12px; background-color: #f8fafc; border-left: 3px solid #3b82f6; font-size: 12px; color: #64748b; line-height: 1.5;">
-                    <strong>Nguyên tắc hệ thống:</strong> Số liệu đối soát trực tiếp từ sàn HOSE/HNX sau phiên ATC, loại bỏ hoàn toàn suy đoán giá và thiên kiến định tính.
+                    <strong>Nguyên tắc hệ thống:</strong> Số liệu đối soát trực tiếp từ sổ lệnh sau phiên ATC, loại bỏ hoàn toàn suy đoán giá và thiên kiến định tính.
                 </div>
             </div>
         </div>
@@ -216,7 +230,6 @@ class handler(BaseHTTPRequestHandler):
             else:
                 failed_symbols.append(symbol)
 
-        # Nếu không lấy được bất kỳ mã nào (lỗi mạng diện rộng) mới báo lỗi
         if not stocks_data:
             self.send_response(500)
             self.send_header('Content-type', 'application/json; charset=utf-8')
