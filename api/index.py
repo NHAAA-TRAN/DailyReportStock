@@ -2,146 +2,157 @@ import os
 import json
 import time
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler
 import pytz
 import requests
 import resend
 
+# Danh sách 9 mã theo dõi
 WATCHLIST = ["TCM", "TCH", "CTS", "FRT", "GEX", "STB", "VCB", "VIX", "VPB"]
 
-def get_from_tcbs(symbol: str):
-    """Nguồn 1: TCBS Insight API (Kèm Referer chống 403 Forbidden)"""
-    now_ts = int(time.time())
-    from_ts = now_ts - (15 * 86400)
-    url = f"https://apipubaws.tcbs.com.vn/stock-insight/v1/stock/bars-long-term?ticker={symbol}&type=stock&resolution=D&from={from_ts}&to={now_ts}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://tcinvest.tcbs.com.vn",
-        "Referer": "https://tcinvest.tcbs.com.vn/"
-    }
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+
+def get_from_ssi(symbol: str):
+    """Nguồn 1: SSI iBoard API (Tốc độ cao, không chặn Vercel IP)"""
+    url = f"https://iboard-query.ssi.com.vn/stock/stockDetail?stockSymbol={symbol}"
     try:
-        res = requests.get(url, headers=headers, timeout=4)
+        res = requests.get(url, headers=HEADERS, timeout=3)
         if res.status_code == 200:
-            data = res.json().get("data", [])
-            if len(data) >= 2:
-                latest = data[-1]
-                prev = data[-2]
-                close_p = float(latest.get("close", 0)) * 1000
-                prev_p = float(prev.get("close", 0)) * 1000
-                change = close_p - prev_p
-                pct_change = (change / prev_p) * 100 if prev_p else 0
-                volume = int(latest.get("volume", 0))
+            data = res.json().get("data", {})
+            if data and data.get("stockSymbol"):
+                close_p = float(data.get("matchedPrice", 0) or data.get("closePrice", 0))
+                ref_p = float(data.get("refPrice", 0))
 
-                return {
-                    "symbol": symbol,
-                    "close": close_p,
-                    "change": change,
-                    "pct_change": pct_change,
-                    "volume": volume,
-                    "source": "TCBS"
-                }
-    except Exception:
-        pass
-    return None
+                # Chuẩn hóa về đơn vị đồng
+                if 0 < close_p < 1000:
+                    close_p *= 1000
+                if 0 < ref_p < 1000:
+                    ref_p *= 1000
 
-def get_from_vndirect(symbol: str):
-    """Nguồn 2: VNDIRECT Finfo API (Kèm Referer)"""
-    url = f"https://finfo-api.vndirect.com.vn/v4/stock_prices?sort=date:desc&size=2&q=code:{symbol}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Origin": "https://dchart.vndirect.com.vn",
-        "Referer": "https://dchart.vndirect.com.vn/"
-    }
-    try:
-        res = requests.get(url, headers=headers, timeout=4)
-        if res.status_code == 200:
-            items = res.json().get("data", [])
-            if items:
-                latest = items[0]
-                raw_close = float(latest.get("close", 0))
-                raw_change = float(latest.get("change") or latest.get("priceChange", 0))
-                pct_change = float(latest.get("pctChange", 0))
-                volume = int(latest.get("nmVolume") or latest.get("dealVolume", 0))
+                change = close_p - ref_p if ref_p else 0
+                pct_change = (change / ref_p) * 100 if ref_p else 0
+                volume = int(data.get("totalMatchVolume", 0) or data.get("nmVolume", 0))
 
-                close_p = raw_close * 1000 if raw_close < 1000 else raw_close
-                change = raw_change * 1000 if abs(raw_change) < 100 else raw_change
-
-                return {
-                    "symbol": symbol,
-                    "close": close_p,
-                    "change": change,
-                    "pct_change": pct_change,
-                    "volume": volume,
-                    "source": "VNDIRECT"
-                }
-    except Exception:
-        pass
-    return None
-
-def get_from_yahoo(symbol: str):
-    """Nguồn 3: Yahoo Finance API quốc tế (Miễn nhiễm 100% với việc chặn IP Datacenter)"""
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.VN?interval=1d&range=5d"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        "Accept": "application/json"
-    }
-    try:
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            chart_data = res.json().get("chart", {}).get("result", [])
-            if chart_data:
-                meta = chart_data[0].get("meta", {})
-                close_p = float(meta.get("regularMarketPrice") or 0)
-                prev_p = float(meta.get("chartPreviousClose") or meta.get("previousClose") or 0)
-
-                indicators = chart_data[0].get("indicators", {}).get("quote", [{}])[0]
-                volumes = indicators.get("volume", [])
-                volume = int(volumes[-1]) if volumes and volumes[-1] is not None else 0
-
-                if close_p > 0 and prev_p > 0:
-                    change = close_p - prev_p
-                    pct_change = (change / prev_p) * 100
+                if close_p > 0:
                     return {
                         "symbol": symbol,
                         "close": close_p,
                         "change": change,
                         "pct_change": pct_change,
                         "volume": volume,
-                        "source": "YahooFinance"
+                        "source": "SSI"
                     }
     except Exception:
         pass
     return None
 
+def get_from_dnse(symbol: str):
+    """Nguồn 2: DNSE Entrade API"""
+    url = f"https://services.entrade.com.vn/chart-api/v2/ohlc/stock?resolution=1D&symbol={symbol}"
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=3)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get('c') and len(data['c']) >= 2:
+                close_p = float(data['c'][-1])
+                prev_p = float(data['c'][-2])
+                change = close_p - prev_p
+                pct_change = (change / prev_p) * 100 if prev_p else 0
+                volume = int(data['v'][-1]) if data.get('v') else 0
+
+                return {
+                    "symbol": symbol,
+                    "close": close_p,
+                    "change": change,
+                    "pct_change": pct_change,
+                    "volume": volume,
+                    "source": "DNSE"
+                }
+    except Exception:
+        pass
+    return None
+
+def get_from_vndirect_dchart(symbol: str):
+    """Nguồn 3: VNDIRECT TradingView UDF (Cổng mở toàn cầu)"""
+    now_ts = int(time.time())
+    from_ts = now_ts - (15 * 86400)
+    url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution=D&symbol={symbol}&from={from_ts}&to={now_ts}"
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=3)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get('s') == 'ok' and data.get('c') and len(data['c']) >= 2:
+                raw_c = float(data['c'][-1])
+                raw_prev = float(data['c'][-2])
+                close_p = raw_c * 1000 if raw_c < 1000 else raw_c
+                prev_p = raw_prev * 1000 if raw_prev < 1000 else raw_prev
+                change = close_p - prev_p
+                pct_change = (change / prev_p) * 100 if prev_p else 0
+                volume = int(data['v'][-1]) if data.get('v') else 0
+
+                return {
+                    "symbol": symbol,
+                    "close": close_p,
+                    "change": change,
+                    "pct_change": pct_change,
+                    "volume": volume,
+                    "source": "VND_DCHART"
+                }
+    except Exception:
+        pass
+    return None
+
 def fetch_stock_price(symbol: str):
-    """Cơ chế Fallback: TCBS -> VNDIRECT -> Yahoo Finance"""
-    data = get_from_tcbs(symbol)
+    """Thử lần lượt SSI -> DNSE -> VNDIRECT Dchart"""
+    data = get_from_ssi(symbol)
     if data:
         return data
 
-    data = get_from_vndirect(symbol)
+    data = get_from_dnse(symbol)
     if data:
         return data
 
-    data = get_from_yahoo(symbol)
+    data = get_from_vndirect_dchart(symbol)
     if data:
         return data
 
     return None
 
+def fetch_all_watchlist_parallel(symbols):
+    """Chạy song song tất cả các mã qua ThreadPoolExecutor để tối ưu tốc độ"""
+    results = {}
+    with ThreadPoolExecutor(max_workers=9) as executor:
+        future_to_symbol = {executor.submit(fetch_stock_price, sym): sym for sym in symbols}
+        for future in as_completed(future_to_symbol):
+            sym = future_to_symbol[future]
+            try:
+                res = future.result()
+                if res:
+                    results[sym] = res
+            except Exception:
+                pass
+    
+    # Đảm bảo giữ đúng thứ tự hiển thị như WATCHLIST
+    ordered_results = [results[s] for s in symbols if s in results]
+    failed = [s for s in symbols if s not in results]
+    return ordered_results, failed
+
 def build_html_table(stocks_data, failed_symbols, date_str):
     rows = ""
     for item in stocks_data:
         if item['change'] > 0:
-            color = "#16a34a"  # Xanh lá
+            color = "#16a34a"
             sign = "+"
         elif item['change'] < 0:
-            color = "#dc2626"  # Đỏ
+            color = "#dc2626"
             sign = ""
         else:
-            color = "#d97706"  # Vàng tham chiếu
+            color = "#d97706"
             sign = ""
 
         rows += f"""
@@ -188,7 +199,7 @@ def build_html_table(stocks_data, failed_symbols, date_str):
                 </table>
                 {failed_alert}
                 <div style="margin-top: 20px; padding: 12px; background-color: #f8fafc; border-left: 3px solid #3b82f6; font-size: 12px; color: #64748b; line-height: 1.5;">
-                    <strong>Nguyên tắc hệ thống:</strong> Số liệu đối soát trực tiếp từ sổ lệnh sau phiên ATC, loại bỏ hoàn toàn suy đoán giá và thiên kiến định tính.
+                    <strong>Nguyên tắc hệ thống:</strong> Dữ liệu được trích xuất trực tiếp từ cổng API bảng giá chứng khoán sau phiên ATC, không qua suy đoán hoặc tổng hợp định tính của LLM.
                 </div>
             </div>
         </div>
@@ -220,15 +231,7 @@ class handler(BaseHTTPRequestHandler):
         now = datetime.now(tz)
         date_str = now.strftime("%d/%m/%Y")
 
-        stocks_data = []
-        failed_symbols = []
-
-        for symbol in WATCHLIST:
-            item = fetch_stock_price(symbol)
-            if item:
-                stocks_data.append(item)
-            else:
-                failed_symbols.append(symbol)
+        stocks_data, failed_symbols = fetch_all_watchlist_parallel(WATCHLIST)
 
         if not stocks_data:
             self.send_response(500)
