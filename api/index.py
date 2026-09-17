@@ -541,7 +541,7 @@ class handler(BaseHTTPRequestHandler):
         current_hour = now.hour
         current_minute = now.minute
 
-        is_correct_time_window = (current_hour == 18 and current_minute >= 50) or (current_hour == 19 and current_minute <= 30)
+        is_correct_time_window = (current_hour == 18 and current_minute >= 50) or (current_hour in [19, 20] and not (current_hour == 20 and current_minute > 30))
 
         if not is_correct_time_window and not is_force:
             self.send_response(200)
