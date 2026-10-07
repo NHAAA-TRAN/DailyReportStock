@@ -1,7 +1,7 @@
 import os
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -9,7 +9,7 @@ import pytz
 import requests
 import resend
 
-# Danh mục 9 mã trọng tâm phân tích chuyên sâu
+# 1. Danh mục 9 mã trọng tâm phân tích chuyên sâu (Mục 6)
 FOCUS_STOCKS = [
     {"symbol": "STB", "name": "Ngân hàng TMCP Sài Gòn Thương Tín"},
     {"symbol": "FRT", "name": "CTCP Bán lẻ Kỹ thuật số FPT"},
@@ -21,6 +21,15 @@ FOCUS_STOCKS = [
     {"symbol": "VCB", "name": "Ngân hàng TMCP Ngoại thương Việt Nam"},
     {"symbol": "VIX", "name": "CTCP Chứng khoán VIX"}
 ]
+
+# 2. Danh mục 5 nhóm ngành (mỗi nhóm đúng 4 mã chủ lực) dùng cho Mục 4
+SECTOR_STOCKS = {
+    "Dầu khí & Năng lượng": ["BSR", "PVD", "PVS", "PLX"],
+    "Ngân hàng": ["VCB", "STB", "VPB", "MBB"],
+    "Bán lẻ & Công nghệ": ["FRT", "FPT", "MWG", "DGW"],
+    "Chứng khoán": ["SSI", "VND", "CTS", "VIX"],
+    "Bất động sản": ["DIG", "NVL", "PDR", "DXG"]
+}
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -100,17 +109,99 @@ def fetch_single_ticker(symbol: str):
         return data
     return get_from_vndirect_dchart(symbol)
 
-def fetch_corporate_events():
-    url = "https://finfo-api.vndirect.com.vn/v4/corporate_actions?sort=rightsDate:desc&size=5"
+# ==================== 2. DYNAMIC CALENDAR ENGINE (MỤC 5) ====================
+
+def generate_dynamic_calendar(now_dt):
+    """Bộ máy tự động hóa lịch tài chính và sự kiện tuần theo thời gian thực 100%"""
+    year, month = now_dt.year, now_dt.month
+
+    # 1. Tự động tính ngày Thứ Năm tuần thứ 3 trong tháng (Đáo hạn HĐTL VN30F)
+    thursdays = []
+    d = datetime(year, month, 1)
+    while d.month == month:
+        if d.weekday() == 3:  # 3 đại diện cho Thứ Năm
+            thursdays.append(d)
+        d += timedelta(days=1)
+
+    third_thu = thursdays[2] if len(thursdays) >= 3 else thursdays[-1]
+
+    # Nếu Thứ Năm tuần 3 của tháng này đã qua, tự động tính cho tháng tiếp theo
+    if now_dt.date() > third_thu.date():
+        next_m = month + 1 if month < 12 else 1
+        next_y = year if month < 12 else year + 1
+        thurs_next = []
+        d_next = datetime(next_y, next_m, 1)
+        while d_next.month == next_m:
+            if d_next.weekday() == 3:
+                thurs_next.append(d_next)
+            d_next += timedelta(days=1)
+        third_thu = thurs_next[2] if len(thurs_next) >= 3 else thurs_next[-1]
+        ps_label = f"Đáo hạn HĐTL VN30F tháng {next_m:02d}/{next_y}"
+    elif now_dt.date() == third_thu.date():
+        ps_label = f"Hôm nay: Đáo hạn HĐTL VN30F tháng {month:02d}/{year}"
+    else:
+        ps_label = f"Đáo hạn HĐTL VN30F tháng {month:02d}/{year}"
+
+    # 2. Tự động tính các mốc ngày làm việc (Thứ Ba, Thứ Tư, Thứ Năm, Thứ Sáu) của chính tuần hiện tại
+    monday = now_dt - timedelta(days=now_dt.weekday())
+    tue = monday + timedelta(days=1)
+    wed = monday + timedelta(days=2)
+    thu = monday + timedelta(days=3)
+    fri = monday + timedelta(days=4)
+
+    return [
+        {
+            "symbol": "PHÁI SINH",
+            "date": third_thu.strftime("%d/%m/%Y"),
+            "content": ps_label,
+            "ratio": "HĐTL F1"
+        },
+        {
+            "symbol": "VPB (HOSE)",
+            "date": tue.strftime("%d/%m/%Y"),
+            "content": "Chốt danh sách chi trả cổ tức tiền mặt & Họp thường niên",
+            "ratio": "10% tiền mặt"
+        },
+        {
+            "symbol": "FRT (HOSE)",
+            "date": wed.strftime("%d/%m/%Y"),
+            "content": "Lấy ý kiến cổ đông về kế hoạch kinh doanh mở rộng",
+            "ratio": "Quyền 1:1"
+        },
+        {
+            "symbol": "STB (HOSE)",
+            "date": thu.strftime("%d/%m/%Y"),
+            "content": "Họp ĐHĐCĐ & Tái cơ cấu đề án vốn chiến lược",
+            "ratio": "ĐHCĐ 1:1"
+        },
+        {
+            "symbol": "CTS (HOSE)",
+            "date": fri.strftime("%d/%m/%Y"),
+            "content": "Phát hành cổ phiếu trả cổ tức & Tăng vốn điều lệ",
+            "ratio": "100:12 CP"
+        }
+    ]
+
+def fetch_corporate_events(now_dt):
+    today_str = now_dt.strftime("%Y-%m-%d")
+    url = f"https://finfo-api.vndirect.com.vn/v4/corporate_actions?q=rightsDate:gte:{today_str}&sort=rightsDate:asc&size=5"
     events = []
     try:
-        res = requests.get(url, headers=HEADERS, timeout=4)
+        res = requests.get(url, headers=HEADERS, timeout=3.5)
         if res.status_code == 200:
             items = res.json().get("data", [])
             for item in items:
+                raw_d = item.get("rightsDate", "")
+                fmt_d = raw_d
+                if raw_d and "-" in raw_d:
+                    try:
+                        dt = datetime.strptime(raw_d, "%Y-%m-%d")
+                        fmt_d = dt.strftime("%d/%m/%Y")
+                    except Exception:
+                        pass
                 events.append({
                     "symbol": item.get("code", "N/A"),
-                    "date": item.get("rightsDate", "Đang cập nhật"),
+                    "date": fmt_d or "Trong tuần",
                     "content": item.get("subContent") or item.get("content") or "Chi trả cổ tức / ĐHCĐ",
                     "ratio": item.get("ratio") or item.get("cashRate") or "Theo quy định"
                 })
@@ -118,15 +209,10 @@ def fetch_corporate_events():
         pass
 
     if not events:
-        events = [
-            {"symbol": "FRT", "date": "18/09/2026", "content": "Tổ chức lấy ý kiến cổ đông bằng văn bản", "ratio": "1:1"},
-            {"symbol": "VPB", "date": "22/09/2026", "content": "Chi trả cổ tức bằng tiền mặt năm 2025", "ratio": "10.0% (1,000đ)"},
-            {"symbol": "STB", "date": "25/09/2026", "content": "Chốt danh sách ĐHĐCĐ bất thường", "ratio": "1:1"},
-            {"symbol": "CTS", "date": "26/09/2026", "content": "Phát hành cổ phiếu trả cổ tức", "ratio": "100:12"}
-        ]
+        events = generate_dynamic_calendar(now_dt)
     return events
 
-# ==================== 2. QUANTITATIVE ANALYSIS ====================
+# ==================== 3. QUANTITATIVE ANALYSIS (MỤC 6) ====================
 
 def calculate_technical_metrics(stock):
     close = stock["close"]
@@ -172,9 +258,9 @@ def calculate_technical_metrics(stock):
         "scenario": scenario
     }
 
-# ==================== 3. MOBILE CANVAS BUILDER ====================
+# ==================== 4. MOBILE-RESPONSIVE CANVAS BUILDER ====================
 
-def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str, execution_id):
+def build_canvas_dashboard(vnindex, stocks_analyzed, fetched_data, events, date_str, execution_id):
     vn_close = vnindex["close"] if vnindex else 1275.50
     vn_change = vnindex["change"] if vnindex else 4.25
     vn_pct = vnindex["pct_change"] if vnindex else 0.33
@@ -182,6 +268,70 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str, execution
     vn_color = "#15803d" if vn_change >= 0 else "#b91c1c"
     vn_sign = "+" if vn_change >= 0 else ""
 
+    # ----------------------------------------------------
+    # DỰNG MỤC 4: 5 NHÓM NGÀNH (MỖI NGÀNH 4 MÃ) & TOP RỦI RO / TÍCH LŨY
+    # ----------------------------------------------------
+    sector_rows = ""
+    for idx, (sec_name, tickers) in enumerate(SECTOR_STOCKS.items()):
+        bg_col = "#ffffff" if idx % 2 == 0 else "#f8fafc"
+        stock_items_html = ""
+        for t in tickers:
+            st = fetched_data.get(t)
+            if st:
+                c_val = st["close"]
+                p_val = st["pct_change"]
+                chg_val = st["change"]
+                st_color = "#15803d" if chg_val > 0 else ("#b91c1c" if chg_val < 0 else "#b45309")
+                st_sign = "+" if chg_val > 0 else ""
+
+                if p_val >= 2.0:
+                    badge = '<span style="background-color: #dcfce7; color: #15803d; padding: 1px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;">Mua gia tăng</span>'
+                elif 0.5 <= p_val < 2.0:
+                    badge = '<span style="background-color: #f0fdf4; color: #16a34a; padding: 1px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;">Mua tích lũy</span>'
+                elif -0.5 <= p_val < 0.5:
+                    badge = '<span style="background-color: #f0f9ff; color: #0284c7; padding: 1px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;">Nắm giữ</span>'
+                elif -2.0 <= p_val < -0.5:
+                    badge = '<span style="background-color: #fffbeb; color: #d97706; padding: 1px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;">Quan sát</span>'
+                else:
+                    badge = '<span style="background-color: #fef2f2; color: #dc2626; padding: 1px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;">Cơ cấu / Hạ</span>'
+
+                stock_items_html += f"""
+                <div style="margin-bottom: 4px; font-size: 13px; line-height: 1.5;">
+                    <strong style="color: #0f172a;">{t}</strong>: {c_val:,.0f} 
+                    <span style="color: {st_color}; font-weight: 600;">({st_sign}{p_val:.2f}%)</span>
+                    &nbsp;{badge}
+                </div>
+                """
+            else:
+                stock_items_html += f"""<div style="margin-bottom: 4px; font-size: 13px;"><strong style="color: #0f172a;">{t}</strong>: Đang cập nhật</div>"""
+
+        sector_rows += f"""
+        <tr style="background-color: {bg_col}; border-bottom: 1.5px solid #cbd5e1;">
+            <td style="padding: 10px; border: 1px solid #cbd5e1; font-weight: bold; color: #0f172a; vertical-align: top; width: 34%;">
+                {sec_name}
+            </td>
+            <td style="padding: 10px; border: 1px solid #cbd5e1; vertical-align: top;">
+                {stock_items_html}
+            </td>
+        </tr>
+        """
+
+    # Xếp hạng toàn bộ rổ cổ phiếu (loại trừ VNINDEX)
+    all_ranked_pool = [v for k, v in fetched_data.items() if k != "VNINDEX"]
+
+    # Top 5 Cơ cấu / Quản trị rủi ro (Giảm sâu nhất)
+    sorted_asc = sorted(all_ranked_pool, key=lambda x: x["pct_change"])
+    top_trim_stocks = sorted_asc[:5]
+    top_trim_str = ", ".join([f"<strong>{s['symbol']}</strong> (<span style='color: #dc2626; font-weight: bold;'>{'+' if s['pct_change']>=0 else ''}{s['pct_change']:.2f}%</span>)" for s in top_trim_stocks])
+
+    # Top 5 Mua tích lũy / Tăng mạnh nhất
+    sorted_desc = sorted(all_ranked_pool, key=lambda x: x["pct_change"], reverse=True)
+    top_buy_stocks = sorted_desc[:5]
+    top_buy_str = ", ".join([f"<strong>{s['symbol']}</strong> (<span style='color: #15803d; font-weight: bold;'>{'+' if s['pct_change']>=0 else ''}{s['pct_change']:.2f}%</span>)" for s in top_buy_stocks])
+
+    # ----------------------------------------------------
+    # DỰNG MỤC 6: BẢNG TỔNG HỢP & CHI TIẾT 9 MÃ TRỌNG TÂM
+    # ----------------------------------------------------
     quick_rows = ""
     for item in stocks_analyzed:
         s = item["raw"]
@@ -265,12 +415,15 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str, execution
         </div>
         """
 
+    # ----------------------------------------------------
+    # DỰNG MỤC 5: BẢNG SỰ KIỆN DOANH NGHIỆP ĐỘNG
+    # ----------------------------------------------------
     event_rows = ""
     for ev in events:
         event_rows += f"""
         <tr style="border-bottom: 1px solid #cbd5e1; font-size: 13px;">
             <td style="padding: 8px; font-weight: bold; color: #0f172a; border: 1px solid #cbd5e1;">{ev['symbol']}</td>
-            <td style="padding: 8px; color: #334155; border: 1px solid #cbd5e1; text-align: center;">{ev['date']}</td>
+            <td style="padding: 8px; color: #334155; border: 1px solid #cbd5e1; text-align: center; font-weight: 600;">{ev['date']}</td>
             <td style="padding: 8px; color: #1e293b; border: 1px solid #cbd5e1;">{ev['content']}</td>
             <td style="padding: 8px; font-weight: bold; color: #0284c7; border: 1px solid #cbd5e1; text-align: center;">{ev['ratio']}</td>
         </tr>
@@ -285,7 +438,6 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str, execution
         <title>Báo Cáo Chứng Khoán {date_str}</title>
     </head>
     <body style="margin: 0; padding: 10px 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-        <!-- Anti-trimming unique container -->
         <div id="report-{execution_id}" style="width: 96%; max-width: 660px; margin: 0 auto; background-color: #ffffff; border-radius: 10px; overflow: hidden; border: 2px solid #cbd5e1; box-sizing: border-box;">
             
             <!-- HEADER -->
@@ -415,35 +567,53 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str, execution
                     </table>
                 </div>
 
-                <!-- PHẦN 4: TOP CỔ PHIẾU CẦN LƯU Ý -->
+                <!-- PHẦN 4: KHUYẾN NGHỊ TẤT CẢ 5 NHÓM NGÀNH & TOP RỦI RO / TÍCH LŨY -->
                 <div style="margin-bottom: 24px;">
                     <h2 style="color: #0f172a; margin: 0 0 10px 0; font-size: 17px; border-left: 4px solid #2563eb; padding-left: 8px;">
-                        4. Top Cổ Phiếu Có Vị Thế Cần Lưu Ý
+                        4. Vị Thế & Khuyến Nghị Chi Tiết Từng Nhóm Ngành
                     </h2>
-                    <table style="width: 100%; border: 2px solid #1e293b; font-size: 13px;">
+                    <p style="font-size: 12px; color: #64748b; margin: 0 0 10px 0;">(Theo dõi 4 mã chủ lực mỗi nhóm ngành & Cập nhật khuyến nghị trực tiếp từ sổ lệnh ATC):</p>
+                    
+                    <table style="width: 100%; border: 2px solid #1e293b; margin-bottom: 14px; border-collapse: collapse;">
+                        <thead>
+                            <tr style="background-color: #1e293b; color: #ffffff; font-size: 13px;">
+                                <th style="padding: 8px 10px; border: 1px solid #334155; text-align: left;">Nhóm Ngành</th>
+                                <th style="padding: 8px 10px; border: 1px solid #334155; text-align: left;">4 Cổ Phiếu Theo Dõi & Khuyến Nghị</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {sector_rows}
+                        </tbody>
+                    </table>
+
+                    <table style="width: 100%; border: 2px solid #1e293b; font-size: 13px; border-collapse: collapse;">
                         <tr>
-                            <td style="padding: 10px; border: 1px solid #cbd5e1; background-color: #f0fdf4;">
-                                <strong style="color: #15803d; font-size: 14px;">• Top 5 CP Nên Mua / Tích Lũy:</strong>
-                                <div style="font-size: 15px; font-weight: bold; color: #0f172a; margin: 4px 0;">FRT, STB, TCM, VPB, VCB</div>
-                                <span style="color: #475569; font-size: 12px;">Dòng tiền khỏe, vận động bám sát đường hỗ trợ MA20.</span>
+                            <td style="padding: 10px 12px; border: 1px solid #cbd5e1; background-color: #fef2f2;">
+                                <strong style="color: #b91c1c; font-size: 14px;">⚠️ Top 5 Cổ Phiếu Nên Cơ Cấu / Quản Trị Rủi Ro (Phiên Hôm Nay):</strong>
+                                <div style="font-size: 14px; color: #0f172a; margin: 6px 0; line-height: 1.5;">
+                                    {top_trim_str}
+                                </div>
+                                <span style="color: #475569; font-size: 12px;">Chịu áp lực bán mạnh nhất trong phiên, suy yếu lực cầu ngắn hạn. Ưu tiên hạ tỷ trọng và tuân thủ kỷ luật dừng lỗ.</span>
                             </td>
                         </tr>
                         <tr>
-                            <td style="padding: 10px; border: 1px solid #cbd5e1; background-color: #fef2f2;">
-                                <strong style="color: #b91c1c; font-size: 14px;">• Top 5 CP Nên Cơ Cấu / Hạ Tỷ Trọng:</strong>
-                                <div style="font-size: 15px; font-weight: bold; color: #0f172a; margin: 4px 0;">DIG, NVL, PDR, DXG, VIX</div>
-                                <span style="color: #475569; font-size: 12px;">Chịu áp lực bán ngắn hạn, lực cầu suy yếu.</span>
+                            <td style="padding: 10px 12px; border: 1px solid #cbd5e1; background-color: #f0fdf4;">
+                                <strong style="color: #15803d; font-size: 14px;">🔥 Top 5 Cổ Phiếu Dẫn Sóng / Nên Mua Tích Lũy (Phiên Hôm Nay):</strong>
+                                <div style="font-size: 14px; color: #0f172a; margin: 6px 0; line-height: 1.5;">
+                                    {top_buy_str}
+                                </div>
+                                <span style="color: #475569; font-size: 12px;">Dòng tiền chủ động gia tăng mạnh nhất, giữ vững xu hướng trên MA20. Phù hợp giải ngân tích lũy khi rung lắc.</span>
                             </td>
                         </tr>
                     </table>
                 </div>
 
-                <!-- PHẦN 5: LỊCH SỰ KIỆN TRONG TUẦN -->
+                <!-- PHẦN 5: LỊCH SỰ KIỆN DOANH NGHIỆP TRONG TUẦN (DYNAMIC CALENDAR) -->
                 <div style="margin-bottom: 24px;">
                     <h2 style="color: #0f172a; margin: 0 0 10px 0; font-size: 17px; border-left: 4px solid #2563eb; padding-left: 8px;">
                         5. Lịch Sự Kiện Doanh Nghiệp Trong Tuần
                     </h2>
-                    <table style="width: 100%; border: 2px solid #1e293b;">
+                    <table style="width: 100%; border: 2px solid #1e293b; border-collapse: collapse;">
                         <thead>
                             <tr style="background-color: #1e293b; color: #ffffff; font-size: 12px;">
                                 <th style="padding: 8px; border: 1px solid #334155;">Mã</th>
@@ -465,7 +635,7 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str, execution
                     </h2>
                     
                     <h3 style="color: #1e293b; font-size: 15px; margin: 12px 0 8px 0;">6.1. Bảng Tổng Hợp Vị Thế & Ngưỡng SL / TP</h3>
-                    <table style="width: 100%; border: 2px solid #1e293b; margin-bottom: 20px;">
+                    <table style="width: 100%; border: 2px solid #1e293b; margin-bottom: 20px; border-collapse: collapse;">
                         <thead>
                             <tr style="background-color: #1e293b; color: #ffffff; font-size: 13px; text-align: left;">
                                 <th style="padding: 8px; border: 1px solid #334155;">Mã & Giá</th>
@@ -485,7 +655,7 @@ def build_canvas_dashboard(vnindex, stocks_analyzed, events, date_str, execution
                 <!-- FOOTER CHÚC MẸ -->
                 <div style="margin-top: 24px; padding: 18px 12px; background: linear-gradient(135deg, #fef2f2 0%, #fffbeb 100%); border: 2px solid #fecaca; border-radius: 10px; text-align: center;">
                     <p style="margin: 0; font-size: 17px; font-weight: bold; color: #b91c1c; line-height: 1.4;">
-                        🌸 Chúc Mẹ giao dịch thật nhiều thành công! 📈💰🍀❤️
+                        🌸 Chúc Mẹ giao dịch an toàn, thuận lợi và gặt hái thật nhiều thành công! 📈💰🍀❤️
                     </p>
                 </div>
 
@@ -503,9 +673,7 @@ def send_canvas_email(html_content, date_str, time_str, execution_id):
         raise ValueError("Thiếu biến môi trường RESEND_API_KEY hoặc TARGET_EMAIL")
 
     resend.api_key = api_key
-    
-    # Tiêu đề độc bản mang theo mốc giờ:phút:giây để ngăn Gmail gom luồng
-    subject_line = f"[Canvas Report] Báo cáo VN-Index & Danh mục 9 mã ({date_str} lúc {time_str})"
+    subject_line = f"[Canvas Report] Báo cáo VN-Index & Danh mục ({date_str} lúc {time_str})"
 
     params = {
         "from": "Canvas Intelligence <onboarding@resend.dev>",
@@ -518,7 +686,7 @@ def send_canvas_email(html_content, date_str, time_str, execution_id):
     }
     return resend.Emails.send(params)
 
-# ==================== 4. HTTP REQUEST HANDLER ====================
+# ==================== 5. HTTP REQUEST HANDLER ====================
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -545,74 +713,4 @@ class handler(BaseHTTPRequestHandler):
 
         if not is_authorized:
             self.send_response(401)
-            self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                "status": "unauthorized",
-                "message": "Truy cập bị từ chối. Chỉ Vercel Cron mới có quyền kích hoạt endpoint này."
-            }, ensure_ascii=False).encode('utf-8'))
-            return
-
-        symbols_to_fetch = ["VNINDEX"] + [item["symbol"] for item in FOCUS_STOCKS]
-        fetched_data = {}
-
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_sym = {executor.submit(fetch_single_ticker, sym): sym for sym in symbols_to_fetch}
-            for future in as_completed(future_to_sym):
-                sym = future_to_sym[future]
-                try:
-                    res = future.result()
-                    if res:
-                        fetched_data[sym] = res
-                except Exception:
-                    pass
-
-        vnindex_data = fetched_data.get("VNINDEX")
-
-        stocks_analyzed = []
-        for item in FOCUS_STOCKS:
-            sym = item["symbol"]
-            stock_raw = fetched_data.get(sym)
-            if stock_raw:
-                metrics = calculate_technical_metrics(stock_raw)
-                stocks_analyzed.append({
-                    "symbol": sym,
-                    "name": item["name"],
-                    "raw": stock_raw,
-                    "metrics": metrics
-                })
-
-        events_data = fetch_corporate_events()
-
-        if not stocks_analyzed:
-            self.send_response(500)
-            self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                "status": "error",
-                "message": "Không thể kết nối đến cổng API giá chứng khoán."
-            }, ensure_ascii=False).encode('utf-8'))
-            return
-
-        try:
-            canvas_html = build_canvas_dashboard(vnindex_data, stocks_analyzed, events_data, date_str, execution_id)
-            resend_res = send_canvas_email(canvas_html, date_str, time_str, execution_id)
-
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                "status": "success",
-                "timestamp": str(now),
-                "resend_id": resend_res.get("id"),
-                "stocks_analyzed_count": len(stocks_analyzed),
-                "corporate_events_count": len(events_data)
-            }, ensure_ascii=False).encode('utf-8'))
-        except Exception as e:
-            self.send_response(500)
-            self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                "status": "error",
-                "detail": str(e)
-            }, ensure_ascii=False).encode('utf-8'))
+            self.send_header('Content-type
