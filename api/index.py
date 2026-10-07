@@ -663,7 +663,7 @@ def send_canvas_email(html_content, date_str, time_str, execution_id):
         raise ValueError("Thiếu biến môi trường RESEND_API_KEY hoặc TARGET_EMAIL")
 
     resend.api_key = api_key
-    subject_line = f"[Canvas Report] Báo cáo VN-Index & Danh mục ({date_str} lúc {time_str})"
+    subject_line = f"Báo cáo VN-Index & Danh mục ({date_str} lúc {time_str})"
 
     params = {
         "from": "Canvas Intelligence <onboarding@resend.dev>",
